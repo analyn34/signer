@@ -15,6 +15,9 @@ class Signer
   WSSE_NAMESPACE = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd'
   DS_NAMESPACE = 'http://www.w3.org/2000/09/xmldsig#'
 
+  # added Digest method algorithm based on ecurrency soap signing
+  DG_METHOD_ALGORITHM = 'http://www.w3.org/2001/04/xmlenc#sha256'
+
   def initialize(document, noblanks: true)
     self.document = Nokogiri::XML(document.to_s) do |config|
       config.noblanks if noblanks
@@ -141,11 +144,15 @@ class Signer
       security_token_reference_node = Nokogiri::XML::Node.new("#{wsse_ns}:SecurityTokenReference", document)
       key_info_node.add_child(security_token_reference_node)
       set_namespace_for_node(key_info_node, DS_NAMESPACE, ds_namespace_prefix)
-      reference_node = Nokogiri::XML::Node.new("#{wsse_ns}:Reference", document)
-      reference_node['ValueType'] = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3'
-      reference_node['URI'] = "##{security_token_id}"
-      security_token_reference_node.add_child(reference_node)
+
+      # removed wsse:Reference node for ecurrency soap signing
       signed_info_node.add_next_sibling(key_info_node)
+
+      # addedd KeyIdentifier node for ecurrency soap signing
+      key_identifier_node = Nokogiri::XML::Node.new('KeyIdentifier', document)
+      key_identifier_node['EncodingType'] = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary'
+      key_identifier_node['ValueType'] = 'http://docs.oasis-open.org/wss/oasis-wss-soap-message-security-1.1#ThumbprintSHA1'
+      security_token_reference_node.add_child(key_identifier_node)
     end
     node
   end
@@ -257,9 +264,9 @@ class Signer
     transforms_node.add_child(transform_node)
 
     digest_method_node = Nokogiri::XML::Node.new('DigestMethod', document)
-    digest_method_node['Algorithm'] = @digester.digest_id
+    digest_method_node['Algorithm'] = DG_METHOD_ALGORITHM
     reference_node.add_child(digest_method_node)
-    set_namespace_for_node(digest_method_node, DS_NAMESPACE, ds_namespace_prefix)
+    set_namespace_for_node(digest_method_node, DG_METHOD_ALGORITHM, ds_namespace_prefix)
 
     digest_value_node = Nokogiri::XML::Node.new('DigestValue', document)
     digest_value_node.content = target_digest
@@ -311,9 +318,11 @@ class Signer
   protected
 
   # Reset digest algorithm for signature creation and signature algorithm identifier
+
+  # set sha256 as default method for ecurrency soap signing
   def set_default_signature_method!
-    self.signature_digest_algorithm = :sha1
-    self.signature_algorithm_id = 'http://www.w3.org/2000/09/xmldsig#rsa-sha1'
+    self.signature_digest_algorithm = :sha256
+    self.signature_algorithm_id = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'
   end
 
   ##
