@@ -7,7 +7,7 @@ require "signer/digester"
 require "signer/version"
 
 class Signer
-  attr_accessor :document, :private_key, :signature_algorithm_id, :ds_namespace_prefix
+  attr_accessor :document, :private_key, :signature_algorithm_id, :ds_namespace_prefix, :id, :target_node
   attr_reader :cert
   attr_writer :security_node, :signature_node, :security_token_id
 
@@ -22,7 +22,8 @@ class Signer
     self.document = Nokogiri::XML(document.to_s) do |config|
       config.noblanks if noblanks
     end
-    self.digest_algorithm = :sha1
+    # set sha256 as default digest algorithm
+    self.digest_algorithm = :sha256
     self.set_default_signature_method!
   end
 
@@ -152,6 +153,7 @@ class Signer
       key_identifier_node = Nokogiri::XML::Node.new('KeyIdentifier', document)
       key_identifier_node['EncodingType'] = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary'
       key_identifier_node['ValueType'] = 'http://docs.oasis-open.org/wss/oasis-wss-soap-message-security-1.1#ThumbprintSHA1'
+      key_identifier_node.content = Digest::SHA1.hexdigest(cert.to_der)
       security_token_reference_node.add_child(key_identifier_node)
     end
     node
@@ -218,60 +220,19 @@ class Signer
   #
   # Example of XML that will be inserted in message for call like <tt>digest!(node, inclusive_namespaces: ['soap'])</tt>:
   #
-  #   <Reference URI="#_0">
-  #     <Transforms>
-  #       <Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#">
-  #         <ec:InclusiveNamespaces xmlns:ec="http://www.w3.org/2001/10/xml-exc-c14n#" PrefixList="soap" />
-  #       </Transform>
-  #     </Transforms>
-  #     <DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>
-  #     <DigestValue>aeqXriJuUCk4tPNPAGDXGqHj6ao=</DigestValue>
-  #   </Reference>
-
   def digest!(target_node, options = {})
     wsu_ns = namespace_prefix(target_node, WSU_NAMESPACE)
     current_id = target_node["#{wsu_ns}:Id"]  if wsu_ns
-    id = options[:id] || current_id || "_#{Digest::SHA1.hexdigest(target_node.to_s)}"
+    # changeg signature algorithm to sha256
+    id = options[:id] || current_id || "_#{Digest::SHA256.hexdigest(target_node.to_s)}"
     if id.to_s.size > 0
       wsu_ns ||= namespace_prefix(target_node, WSU_NAMESPACE, 'wsu')
       target_node["#{wsu_ns}:Id"] = id.to_s
+      @id = id.to_s
     end
-    target_canon = canonicalize(target_node, options[:inclusive_namespaces])
-    target_digest = Base64.encode64(@digester.digest(target_canon)).strip
-
-    reference_node = Nokogiri::XML::Node.new('Reference', document)
-    reference_node['URI'] = id.to_s.size > 0 ? "##{id}" : ""
-    signed_info_node.add_child(reference_node)
-    set_namespace_for_node(reference_node, DS_NAMESPACE, ds_namespace_prefix)
-
-    transforms_node = Nokogiri::XML::Node.new('Transforms', document)
-    reference_node.add_child(transforms_node)
-    set_namespace_for_node(transforms_node, DS_NAMESPACE, ds_namespace_prefix)
-
-    transform_node = Nokogiri::XML::Node.new('Transform', document)
-    set_namespace_for_node(transform_node, DS_NAMESPACE, ds_namespace_prefix)
-    if options[:enveloped]
-      transform_node['Algorithm'] = 'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
-    else
-      transform_node['Algorithm'] = 'http://www.w3.org/2001/10/xml-exc-c14n#'
-    end
-    if options[:inclusive_namespaces]
-      inclusive_namespaces_node = Nokogiri::XML::Node.new('ec:InclusiveNamespaces', document)
-      inclusive_namespaces_node.add_namespace_definition('ec', transform_node['Algorithm'])
-      inclusive_namespaces_node['PrefixList'] = options[:inclusive_namespaces].join(' ')
-      transform_node.add_child(inclusive_namespaces_node)
-    end
-    transforms_node.add_child(transform_node)
-
-    digest_method_node = Nokogiri::XML::Node.new('DigestMethod', document)
-    digest_method_node['Algorithm'] = DG_METHOD_ALGORITHM
-    reference_node.add_child(digest_method_node)
-    set_namespace_for_node(digest_method_node, DG_METHOD_ALGORITHM, ds_namespace_prefix)
-
-    digest_value_node = Nokogiri::XML::Node.new('DigestValue', document)
-    digest_value_node.content = target_digest
-    reference_node.add_child(digest_value_node)
-    set_namespace_for_node(digest_value_node, DS_NAMESPACE, ds_namespace_prefix)
+    @target_node = target_node
+    
+    # moved the creation of Reference node to sign! method
     self
   end
 
@@ -312,6 +273,46 @@ class Signer
     signature_value_node.content = signature_value_digest
     signed_info_node.add_next_sibling(signature_value_node)
     set_namespace_for_node(signature_value_node, DS_NAMESPACE, ds_namespace_prefix)
+
+    # added codes for creating the Reference node
+
+    target_canon = canonicalize(target_node, options[:inclusive_namespaces])
+    target_digest = Base64.encode64(@digester.digest(target_canon)).strip
+
+    reference_node = Nokogiri::XML::Node.new('Reference', document)
+    reference_node['URI'] = id
+    signed_info_node.add_child(reference_node)
+    set_namespace_for_node(reference_node, DS_NAMESPACE, ds_namespace_prefix)
+
+    transforms_node = Nokogiri::XML::Node.new('Transforms', document)
+    reference_node.add_child(transforms_node)
+    set_namespace_for_node(transforms_node, DS_NAMESPACE, ds_namespace_prefix)
+
+    transform_node = Nokogiri::XML::Node.new('Transform', document)
+    set_namespace_for_node(transform_node, DS_NAMESPACE, ds_namespace_prefix)
+    if options[:enveloped]
+      transform_node['Algorithm'] = 'http://www.w3.org/2000/09/xmldsig#enveloped-signature'
+    else
+      transform_node['Algorithm'] = 'http://www.w3.org/2001/10/xml-exc-c14n#'
+    end
+    if options[:inclusive_namespaces]
+      inclusive_namespaces_node = Nokogiri::XML::Node.new('ec:InclusiveNamespaces', document)
+      inclusive_namespaces_node.add_namespace_definition('ec', transform_node['Algorithm'])
+      inclusive_namespaces_node['PrefixList'] = options[:inclusive_namespaces].join(' ')
+      transform_node.add_child(inclusive_namespaces_node)
+    end
+    transforms_node.add_child(transform_node)
+
+    digest_method_node = Nokogiri::XML::Node.new('DigestMethod', document)
+    digest_method_node['Algorithm'] = DG_METHOD_ALGORITHM
+    reference_node.add_child(digest_method_node)
+    set_namespace_for_node(digest_method_node, DG_METHOD_ALGORITHM, ds_namespace_prefix)
+
+    digest_value_node = Nokogiri::XML::Node.new('DigestValue', document)
+    digest_value_node.content = target_digest
+    reference_node.add_child(digest_value_node)
+    set_namespace_for_node(digest_value_node, DS_NAMESPACE, ds_namespace_prefix)
+
     self
   end
 
